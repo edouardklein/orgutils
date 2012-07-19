@@ -1,0 +1,86 @@
+#!/usr/bin/perl -w
+use strict;
+
+#The whole thing is a state machine
+#In state "FirstPassLookout" the state machine checks each line for a line of the form
+#  #+srcname: somename
+#It then goes in state "DiscardNextLineThenSave" which does what its name implies
+#State "Save" save the named code block for later use
+#When encoutering a line of the form
+#   #+end_src
+#The machine then transitions back to state "FirstPassLookout"
+
+
+#During the second pass, the machine is in state "SecondPassLookout". It waits for a line of the form
+# #+begin_src somelanguage :tangle filename
+#It then goes in mode FileSave, where it stores anything it encouters until a line of the form #+end_src
+#lines of the form <<CodeBlockName>> are replaced with what was saved during the first pass
+
+#Finally all the files are written, relative paths are used with respect to the working directory, not the input file's.
+
+
+my $g_sState = "FirstPassLookout";
+
+open(FILE, $ARGV[0]) or die $!;
+
+my %g_hNamedBlocks;
+my $g_sCurrentBlockName;
+while( <FILE> ){
+  if( $g_sState eq "FirstPassLookout" ){
+    if( $_ =~m/\s*\#\+srcname\:\s*(\w*)/ ){
+      print("Found a named code block : $1\n");
+      $g_sCurrentBlockName = $1;
+      if( ! defined( $g_hNamedBlocks{$g_sCurrentBlockName} ) ){
+	#Ensure its existence, so we can concatenate to it later
+	$g_hNamedBlocks{$g_sCurrentBlockName} = "";
+      }
+      $g_sState = "DiscardNextLineThenSave";
+    }
+  }elsif( $g_sState eq "DiscardNextLineThenSave" ){
+    $g_sState = "Save";
+  }elsif( $g_sState eq "Save" ){
+    if( $_ =~m/\s*\#\+end_src/ ){
+      $g_sState = "FirstPassLookout";
+    }else{
+      $g_hNamedBlocks{$g_sCurrentBlockName} = $g_hNamedBlocks{$g_sCurrentBlockName}.$_;
+    }
+  }
+}
+
+close( FILE );
+open(FILE, $ARGV[0]) or die $!;
+
+$g_sState = "SecondPassLookout";
+my %g_hFileBlocks;
+while( <FILE> ){
+  if( $g_sState eq "SecondPassLookout" ){
+    if( $_ =~m/\s*\#\+begin_src\s*\w*\s*\:tangle\s*([\w\.]*)/ ){
+      print("Found code block for file $1\n");
+      $g_sCurrentBlockName = $1;
+      if( ! defined( $g_hFileBlocks{$g_sCurrentBlockName} ) ){
+	#Ensure its existence, so we can concatenate to it later
+	$g_hFileBlocks{$g_sCurrentBlockName} = "";
+      }
+      $g_sState = "FileSave";
+    }
+  }elsif( $g_sState eq "FileSave" ){
+    if( $_ =~m/\s*\#\+end_src/ ){
+      $g_sState = "SecondPassLookout";
+    }elsif( $_ =~m/\s*<<(\w*)>>/ ){
+      print "Named block $1 recalled\n";
+      $g_hFileBlocks{$g_sCurrentBlockName} = $g_hFileBlocks{$g_sCurrentBlockName}.$g_hNamedBlocks{$1};
+    }else{
+      $g_hFileBlocks{$g_sCurrentBlockName} = $g_hFileBlocks{$g_sCurrentBlockName}.$_;
+    }
+  }
+}
+
+close( FILE );
+
+while( my ($name,$block) = each( %g_hFileBlocks ) ){
+  open(FILE, ">$name" ) or die $!;
+  print FILE $block;
+  close( FILE );
+}
+
+
